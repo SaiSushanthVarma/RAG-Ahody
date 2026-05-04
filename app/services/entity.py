@@ -1,8 +1,10 @@
 import json
-import google.generativeai as genai
+from google import genai
 from app.core.config import get_settings
 
 settings = get_settings()
+
+client = genai.Client(api_key=settings.gemini_api_key)
 
 
 def extract_entities(text: str) -> dict:
@@ -10,9 +12,6 @@ def extract_entities(text: str) -> dict:
     Extract named entities from text using Gemini.
     Returns people, organizations and places found in the text.
     """
-    genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel(settings.llm_model)
-
     prompt = f"""Extract all named entities from the following text.
 Return ONLY a valid JSON object with no extra text, no markdown, no backticks.
 
@@ -28,16 +27,17 @@ If none found for a category return an empty list.
 Text:
 {text}"""
 
-    response = model.generate_content(prompt)
-    
+    response = client.models.generate_content(
+        model=settings.llm_model,
+        contents=prompt
+    )
+
     try:
-        # Clean response in case model adds extra formatting
         raw = response.text.strip()
         raw = raw.replace("```json", "").replace("```", "").strip()
         entities = json.loads(raw)
         return entities
     except json.JSONDecodeError:
-        # Return empty if parsing fails
         return {"people": [], "organizations": [], "places": []}
 
 
@@ -48,7 +48,6 @@ def store_entities(document_id: str, chunk_id: str, entities: dict, conn) -> int
     """
     cursor = conn.cursor()
     total = 0
-
     all_entities = []
 
     for entity_type, names in entities.items():
@@ -61,7 +60,6 @@ def store_entities(document_id: str, chunk_id: str, entities: dict, conn) -> int
                 all_entities.append(name.strip())
                 total += 1
 
-    # Store co-occurrences between all entities in this chunk
     for i in range(len(all_entities)):
         for j in range(i + 1, len(all_entities)):
             cursor.execute("""

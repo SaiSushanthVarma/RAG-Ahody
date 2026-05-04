@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-import google.generativeai as genai
+from google import genai
 from qdrant_client import QdrantClient
 
 from app.core.config import get_settings
@@ -8,6 +8,8 @@ from app.services.embeddings import get_query_embedding
 
 router = APIRouter()
 settings = get_settings()
+
+client = genai.Client(api_key=settings.gemini_api_key)
 
 
 def get_qdrant():
@@ -24,7 +26,6 @@ async def chat(request: ChatRequest):
     Retrieves relevant chunks and generates an answer with source references.
     """
     qdrant = get_qdrant()
-    genai.configure(api_key=settings.gemini_api_key)
 
     try:
         # Step 1 — Embed the question
@@ -78,8 +79,10 @@ Question: {request.question}
 
 Answer:"""
 
-        model = genai.GenerativeModel(settings.llm_model)
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model=settings.llm_model,
+            contents=prompt
+        )
 
         return ChatResponse(
             question=request.question,
