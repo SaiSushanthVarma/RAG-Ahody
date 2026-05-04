@@ -49,6 +49,11 @@ def init_qdrant():
         field_name="tags",
         field_schema=PayloadSchemaType.KEYWORD
     )
+    client.create_payload_index(
+        collection_name=settings.collection_name,
+        field_name="document_id",
+        field_schema=PayloadSchemaType.KEYWORD
+)
     print("Payload indexes created for author, source, tags")
 
 
