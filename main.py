@@ -7,13 +7,13 @@ from app.core.database import init_db
 from app.api import documents, search, chat, graph
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance
+from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
 
 settings = get_settings()
 
 
 def init_qdrant():
-    """Create Qdrant collection if it doesn't exist."""
+    """Create Qdrant collection and indexes if they don't exist."""
     client = QdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key
@@ -32,6 +32,24 @@ def init_qdrant():
         print(f"Created Qdrant collection: {settings.collection_name}")
     else:
         print(f"Qdrant collection already exists: {settings.collection_name}")
+
+    # Create payload indexes for metadata filtering
+    client.create_payload_index(
+        collection_name=settings.collection_name,
+        field_name="author",
+        field_schema=PayloadSchemaType.KEYWORD
+    )
+    client.create_payload_index(
+        collection_name=settings.collection_name,
+        field_name="source",
+        field_schema=PayloadSchemaType.KEYWORD
+    )
+    client.create_payload_index(
+        collection_name=settings.collection_name,
+        field_name="tags",
+        field_schema=PayloadSchemaType.KEYWORD
+    )
+    print("Payload indexes created for author, source, tags")
 
 
 @asynccontextmanager
@@ -52,7 +70,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Allow frontend to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,7 +78,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register all routers
 app.include_router(documents.router, tags=["Documents"])
 app.include_router(search.router, tags=["Search"])
 app.include_router(chat.router, tags=["Chat"])

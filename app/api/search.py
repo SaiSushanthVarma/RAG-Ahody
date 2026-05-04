@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 from typing import Optional, List
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from app.core.config import get_settings
 from app.models.schemas import SearchResponse, SearchResult
@@ -26,70 +26,70 @@ async def search(
     source: Optional[str] = Query(None, description="Filter by source"),
     tags: Optional[str] = Query(None, description="Filter by tag")
 ):
-    """
-    Search the knowledge base using semantic vector search.
-    Supports metadata filtering by author, source and tags.
-    """
     qdrant = get_qdrant()
 
-    # Build metadata filters if provided
-    conditions = []
+    try:
+        # Build metadata filters
+        conditions = []
 
-    if author:
-        conditions.append(
-            FieldCondition(
-                key="author",
-                match=MatchValue(value=author)
+        if author:
+            conditions.append(
+                FieldCondition(
+                    key="author",
+                    match=MatchValue(value=author)
+                )
             )
+
+        if source:
+            conditions.append(
+                FieldCondition(
+                    key="source",
+                    match=MatchValue(value=source)
+                )
+            )
+
+        if tags:
+            conditions.append(
+                FieldCondition(
+                    key="tags",
+                    match=MatchValue(value=tags)
+                )
+            )
+
+        search_filter = Filter(must=conditions) if conditions else None
+
+        # Embed the query
+        query_vector = get_query_embedding(q)
+
+        # Search Qdrant
+        results = qdrant.search(
+            collection_name=settings.collection_name,
+            query_vector=query_vector,
+            limit=top_k,
+            query_filter=search_filter,
+            with_payload=True
         )
 
-    if source:
-        conditions.append(
-            FieldCondition(
-                key="source",
-                match=MatchValue(value=source)
-            )
+        # Format results
+        search_results = []
+        for hit in results:
+            payload = hit.payload
+            search_results.append(SearchResult(
+                chunk_id=payload.get("chunk_id", ""),
+                document_id=payload.get("document_id", ""),
+                title=payload.get("title", ""),
+                text=payload.get("text", ""),
+                score=hit.score,
+                author=payload.get("author", ""),
+                source=payload.get("source", ""),
+                tags=payload.get("tags", [])
+            ))
+
+        return SearchResponse(
+            query=q,
+            results=search_results,
+            total=len(search_results)
         )
 
-    if tags:
-        conditions.append(
-            FieldCondition(
-                key="tags",
-                match=MatchAny(any=[tags])
-            )
-        )
-
-    search_filter = Filter(must=conditions) if conditions else None
-
-    # Embed the query
-    query_vector = get_query_embedding(q)
-
-    # Search Qdrant
-    results = qdrant.search(
-        collection_name=settings.collection_name,
-        query_vector=query_vector,
-        limit=top_k,
-        query_filter=search_filter,
-        with_payload=True
-    )
-
-    # Format results
-    search_results = []
-    for hit in results:
-        payload = hit.payload
-        search_results.append(SearchResult(
-            chunk_id=payload.get("chunk_id", ""),
-            document_id=payload.get("document_id", ""),
-            title=payload.get("title", ""),
-            text=payload.get("text", ""),
-            score=hit.score,
-            author=payload.get("author", ""),
-            source=payload.get("source", ""),
-            tags=payload.get("tags", [])
-        ))
-
-    return SearchResponse(
-        query=q,
-        results=search_results,
-        total=len(search_results)
-    )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
