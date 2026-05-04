@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     collection_name: str = "knowledge_base"
     
     # Embedding settings
-    embedding_model: str = "models/text-embedding-004"
-    embedding_dimension: int = 768
+    embedding_model: str = "gemini-embedding-001"
+    embedding_dimension: int = 3072
     
     # Gemini LLM model
     llm_model: str = "gemini-2.5-flash"
