@@ -2,13 +2,13 @@ import uuid
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from typing import Optional, List
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, SparseVector
 
 from app.core.config import get_settings
 from app.core.database import get_connection
 from app.models.schemas import TextUploadRequest, DocumentUploadResponse
 from app.services.chunking import chunk_text
-from app.services.embeddings import get_embedding
+from app.services.embeddings import get_embedding, get_sparse_embedding
 from app.services.extraction import extract_text_from_pdf
 from app.services.entity import extract_entities, store_entities
 
@@ -32,15 +32,10 @@ def process_and_store(
     tags: Optional[List[str]],
     doc_type: str
 ) -> tuple[int, int]:
-    """
-    Core pipeline: chunk → embed → store in Qdrant + SQLite
-    Returns (chunks_created, entities_extracted)
-    """
     qdrant = get_qdrant()
     conn = get_connection()
 
     try:
-        # Store document metadata in SQLite
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO documents (id, title, author, source, tags, doc_type)
@@ -54,24 +49,36 @@ def process_and_store(
             doc_type
         ))
 
-        # Chunk the text
         chunks = chunk_text(text, settings.chunk_size, settings.chunk_overlap)
-
-        # Embed and store each chunk
         points = []
         total_entities = 0
 
         for i, chunk in enumerate(chunks):
             chunk_id = f"{document_id}_chunk_{i}"
-            embedding = get_embedding(chunk)
 
-            # Extract entities from each chunk
-            entities = extract_entities(chunk)
-            total_entities += store_entities(document_id, chunk_id, entities, conn)
+            # Dense embedding
+            dense_vector = get_embedding(chunk)
+
+            # Sparse BM25 embedding
+            sparse_indices, sparse_values = get_sparse_embedding(chunk)
+
+            
+            # Extract entities — non blocking
+            try:
+                entities = extract_entities(chunk)
+                total_entities += store_entities(document_id, chunk_id, entities, conn)
+            except Exception as entity_error:
+                print(f"Entity extraction failed for chunk {chunk_id}: {entity_error}")
 
             points.append(PointStruct(
                 id=str(uuid.uuid4()),
-                vector=embedding,
+                vector={
+                    "dense": dense_vector,
+                    "sparse": SparseVector(
+                        indices=sparse_indices,
+                        values=sparse_values
+                    )
+                },
                 payload={
                     "chunk_id": chunk_id,
                     "document_id": document_id,
@@ -84,7 +91,6 @@ def process_and_store(
                 }
             ))
 
-        # Store all points in Qdrant
         qdrant.upsert(
             collection_name=settings.collection_name,
             points=points
@@ -95,6 +101,7 @@ def process_and_store(
 
     except Exception as e:
         conn.rollback()
+        print(f"FULL ERROR: {type(e).__name__}: {e}")
         raise e
     finally:
         conn.close()
@@ -102,9 +109,7 @@ def process_and_store(
 
 @router.post("/text", response_model=DocumentUploadResponse)
 async def upload_text(request: TextUploadRequest):
-    """Upload plain text to the knowledge base."""
     document_id = str(uuid.uuid4())
-
     try:
         chunks_created, entities_extracted = process_and_store(
             document_id=document_id,
@@ -115,7 +120,6 @@ async def upload_text(request: TextUploadRequest):
             tags=request.tags,
             doc_type="text"
         )
-
         return DocumentUploadResponse(
             document_id=document_id,
             title=request.title,
@@ -123,7 +127,6 @@ async def upload_text(request: TextUploadRequest):
             entities_extracted=entities_extracted,
             message="Text uploaded and indexed successfully"
         )
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -136,21 +139,17 @@ async def upload_document(
     source: Optional[str] = Form(None),
     tags: Optional[str] = Form(None)
 ):
-    """Upload a PDF document to the knowledge base."""
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     document_id = str(uuid.uuid4())
-
     try:
-        # Read and extract text from PDF
         file_bytes = await file.read()
         text = extract_text_from_pdf(file_bytes)
 
         if not text.strip():
             raise HTTPException(status_code=400, detail="Could not extract text from PDF")
 
-        # Parse tags from comma separated string
         tags_list = [t.strip() for t in tags.split(",")] if tags else []
 
         chunks_created, entities_extracted = process_and_store(
@@ -162,7 +161,6 @@ async def upload_document(
             tags=tags_list,
             doc_type="pdf"
         )
-
         return DocumentUploadResponse(
             document_id=document_id,
             title=title,
@@ -170,7 +168,6 @@ async def upload_document(
             entities_extracted=entities_extracted,
             message="Document uploaded and indexed successfully"
         )
-
     except HTTPException:
         raise
     except Exception as e:

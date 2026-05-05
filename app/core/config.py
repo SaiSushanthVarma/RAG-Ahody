@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     embedding_dimension: int = 3072
     
     # Gemini LLM model
-    llm_model: str = "gemini-2.5-flash"
+    llm_model: str = "gemini-2.5-flash-lite"
+
+    groq_api_key: str = ""
+    groq_model: str = "qwen3-32b"
     
     # Chunking settings
     chunk_size: int = 500

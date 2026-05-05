@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from google import genai
+from groq import Groq
 from qdrant_client import QdrantClient
 
 from app.core.config import get_settings
@@ -9,7 +10,8 @@ from app.services.embeddings import get_query_embedding
 router = APIRouter()
 settings = get_settings()
 
-client = genai.Client(api_key=settings.gemini_api_key)
+gemini_client = genai.Client(api_key=settings.gemini_api_key)
+groq_client = Groq(api_key=settings.groq_api_key) if settings.groq_api_key else None
 
 
 def get_qdrant():
@@ -19,22 +21,41 @@ def get_qdrant():
     )
 
 
+def generate_answer(prompt: str) -> str:
+    """Generate answer with Gemini, fall back to Groq if unavailable."""
+    try:
+        response = gemini_client.models.generate_content(
+            model=settings.llm_model,
+            contents=prompt
+        )
+        return response.text
+    except Exception as e:
+        if groq_client and ("503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e)):
+            print(f"Gemini unavailable, falling back to Groq: {e}")
+            response = groq_client.chat.completions.create(
+                model=settings.groq_model,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content
+        raise e
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
     Chat with the knowledge base.
-    Retrieves relevant chunks and generates an answer with source references.
+    Retrieves relevant chunks and generates answer with source references.
+    Falls back to Groq if Gemini is unavailable.
     """
     qdrant = get_qdrant()
 
     try:
-        # Step 1 — Embed the question
         query_vector = get_query_embedding(request.question)
 
-        # Step 2 — Retrieve relevant chunks from Qdrant
         results = qdrant.search(
             collection_name=settings.collection_name,
             query_vector=query_vector,
+            vector_name="dense",
             limit=request.top_k,
             with_payload=True
         )
@@ -46,7 +67,6 @@ async def chat(request: ChatRequest):
                 sources=[]
             )
 
-        # Step 3 — Build context from retrieved chunks
         context_parts = []
         sources = []
 
@@ -66,7 +86,6 @@ async def chat(request: ChatRequest):
 
         context = "\n\n---\n\n".join(context_parts)
 
-        # Step 4 — Generate answer with Gemini
         prompt = f"""You are a helpful assistant for a knowledge base.
 Answer the question based ONLY on the provided sources below.
 Always reference which source(s) you used by saying [Source 1], [Source 2] etc.
@@ -79,14 +98,11 @@ Question: {request.question}
 
 Answer:"""
 
-        response = client.models.generate_content(
-            model=settings.llm_model,
-            contents=prompt
-        )
+        answer = generate_answer(prompt)
 
         return ChatResponse(
             question=request.question,
-            answer=response.text,
+            answer=answer,
             sources=sources
         )
 
