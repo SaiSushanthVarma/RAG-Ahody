@@ -1,19 +1,19 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import get_settings
 from app.core.database import init_db
+from app.core.auth import verify_api_key
 from app.api import documents, search, chat, graph
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PayloadSchemaType
+from qdrant_client.models import VectorParams, Distance, PayloadSchemaType, SparseVectorParams, SparseIndexParams
 
 settings = get_settings()
 
 
 def init_qdrant():
-    """Create Qdrant collection and indexes if they don't exist."""
     client = QdrantClient(
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key
@@ -24,16 +24,22 @@ def init_qdrant():
     if settings.collection_name not in existing:
         client.create_collection(
             collection_name=settings.collection_name,
-            vectors_config=VectorParams(
-                size=settings.embedding_dimension,
-                distance=Distance.COSINE
-            )
+            vectors_config={
+                "dense": VectorParams(
+                    size=settings.embedding_dimension,
+                    distance=Distance.COSINE
+                )
+            },
+            sparse_vectors_config={
+                "sparse": SparseVectorParams(
+                    index=SparseIndexParams(on_disk=False)
+                )
+            }
         )
-        print(f"Created Qdrant collection: {settings.collection_name}")
+        print(f"Created Qdrant collection with dense + sparse vectors: {settings.collection_name}")
     else:
         print(f"Qdrant collection already exists: {settings.collection_name}")
 
-    # Create payload indexes for metadata filtering
     client.create_payload_index(
         collection_name=settings.collection_name,
         field_name="author",
@@ -53,13 +59,12 @@ def init_qdrant():
         collection_name=settings.collection_name,
         field_name="document_id",
         field_schema=PayloadSchemaType.KEYWORD
-)
-    print("Payload indexes created for author, source, tags")
+    )
+    print("Payload indexes created")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize database and Qdrant on startup."""
     print("Starting up...")
     init_db()
     init_qdrant()
@@ -83,10 +88,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(documents.router, tags=["Documents"])
-app.include_router(search.router, tags=["Search"])
-app.include_router(chat.router, tags=["Chat"])
-app.include_router(graph.router, tags=["Graph"])
+# All routes protected by API key
+app.include_router(
+    documents.router,
+    tags=["Documents"],
+    dependencies=[Depends(verify_api_key)]
+)
+app.include_router(
+    search.router,
+    tags=["Search"],
+    dependencies=[Depends(verify_api_key)]
+)
+app.include_router(
+    chat.router,
+    tags=["Chat"],
+    dependencies=[Depends(verify_api_key)]
+)
+app.include_router(
+    graph.router,
+    tags=["Graph"],
+    dependencies=[Depends(verify_api_key)]
+)
 
 
 @app.get("/")
@@ -99,7 +121,9 @@ async def root():
             "POST /document",
             "GET /search",
             "POST /chat",
-            "GET /graph"
+            "GET /graph",
+            "GET /graph/search",
+            "GET /search/graph-enhanced"
         ]
     }
 

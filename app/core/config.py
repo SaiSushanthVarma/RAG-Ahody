@@ -7,6 +7,10 @@ class Settings(BaseSettings):
     qdrant_url: str
     qdrant_api_key: str
     
+
+    # API key for securing endpoints
+    api_key: str
+
     # Qdrant collection name
     collection_name: str = "knowledge_base"
     
