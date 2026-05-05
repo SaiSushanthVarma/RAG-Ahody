@@ -130,4 +130,11 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "llm_model": settings.llm_model,
+        "embedding_model": settings.embedding_model,
+        "groq_fallback_model": settings.groq_model,
+        "collection": settings.collection_name,
+        "embedding_dimension": settings.embedding_dimension
+    }
