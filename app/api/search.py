@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Depends
 from typing import Optional, List
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny
-
+from qdrant_client.models import Filter, FieldCondition, MatchValue, MatchAny, SparseVector, FusionQuery, Fusion
+from qdrant_client.models import Prefetch
 from app.core.config import get_settings
+from app.core.auth import verify_api_key
 from app.models.schemas import SearchResponse, SearchResult
-from app.services.embeddings import get_query_embedding
+from app.services.embeddings import get_query_embedding, get_sparse_embedding
+from google import genai
 
 router = APIRouter()
 settings = get_settings()
+gemini_client = genai.Client(api_key=settings.gemini_api_key)
 
 
 def get_qdrant():
@@ -26,53 +29,57 @@ async def search(
     source: Optional[str] = Query(None, description="Filter by source"),
     tags: Optional[str] = Query(None, description="Filter by tag")
 ):
+    """
+    Hybrid search combining dense vector and sparse BM25 search.
+    Supports metadata filtering by author, source and tags.
+    """
     qdrant = get_qdrant()
 
     try:
-        # Build metadata filters
         conditions = []
 
         if author:
-            conditions.append(
-                FieldCondition(
-                    key="author",
-                    match=MatchValue(value=author)
-                )
-            )
-
+            conditions.append(FieldCondition(key="author", match=MatchValue(value=author)))
         if source:
-            conditions.append(
-                FieldCondition(
-                    key="source",
-                    match=MatchValue(value=source)
-                )
-            )
-
+            conditions.append(FieldCondition(key="source", match=MatchValue(value=source)))
         if tags:
-            conditions.append(
-                FieldCondition(
-                    key="tags",
-                    match=MatchValue(value=tags)
-                )
-            )
+            conditions.append(FieldCondition(key="tags", match=MatchValue(value=tags)))
 
         search_filter = Filter(must=conditions) if conditions else None
 
-        # Embed the query
-        query_vector = get_query_embedding(q)
+        # Dense vector
+        dense_vector = get_query_embedding(q)
 
-        # Search Qdrant
-        results = qdrant.search(
+        # Sparse BM25 vector
+        sparse_indices, sparse_values = get_sparse_embedding(q)
+
+        # Hybrid search using Qdrant fusion
+        results = qdrant.query_points(
             collection_name=settings.collection_name,
-            query_vector=query_vector,
+            prefetch=[
+                Prefetch(
+                    query=dense_vector,
+                    using="dense",
+                    limit=top_k * 2,
+                    filter=search_filter
+                ),
+                Prefetch(
+                    query=SparseVector(
+                        indices=sparse_indices,
+                        values=sparse_values
+                    ),
+                    using="sparse",
+                    limit=top_k * 2,
+                    filter=search_filter
+                )
+            ],
+            query=FusionQuery(fusion=Fusion.RRF),
             limit=top_k,
-            query_filter=search_filter,
             with_payload=True
         )
 
-        # Format results
         search_results = []
-        for hit in results:
+        for hit in results.points:
             payload = hit.payload
             search_results.append(SearchResult(
                 chunk_id=payload.get("chunk_id", ""),
@@ -93,48 +100,39 @@ async def search(
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    
 
 
 @router.get("/search/graph-enhanced")
 async def graph_enhanced_search(
     q: str = Query(..., description="Search query"),
     entity_a: str = Query(..., description="First entity to filter by"),
-    entity_b: Optional[str] = Query(None, description="Second entity - finds docs mentioning both"),
+    entity_b: Optional[str] = Query(None, description="Second entity"),
     top_k: int = Query(5, description="Number of results to return")
 ):
     """
-    Graph-enhanced search combining entity co-occurrence with vector search.
-    
-    Step 1: Use graph to find documents mentioning entity_a (and entity_b if provided)
-    Step 2: Run vector search ONLY within those documents
-    
-    This gives more precise results than pure vector search alone.
-    Example: /search/graph-enhanced?q=AI strategy&entity_a=Sarah Mitchell&entity_b=DataBridge Solutions
+    3-layer smart search:
+    Layer 1 - Graph: find documents where entities co-occur
+    Layer 2 - Hybrid search: vector + BM25 within those documents
+    Layer 3 - LLM reranking: Gemini re-ranks results by relevance
     """
     from app.core.database import get_connection
+    import json
 
     qdrant = get_qdrant()
     conn = get_connection()
     cursor = conn.cursor()
 
     try:
-        # Step 1 — Graph: find document IDs where entities co-occur
+        # Layer 1 — Graph filtering
         if entity_b:
             cursor.execute("""
-                SELECT DISTINCT document_id
-                FROM co_occurrences
-                WHERE (
-                    (entity_a = ? AND entity_b = ?)
-                    OR
-                    (entity_a = ? AND entity_b = ?)
-                )
+                SELECT DISTINCT document_id FROM co_occurrences
+                WHERE (entity_a = ? AND entity_b = ?)
+                OR (entity_a = ? AND entity_b = ?)
             """, (entity_a, entity_b, entity_b, entity_a))
         else:
             cursor.execute("""
-                SELECT DISTINCT document_id
-                FROM entities
-                WHERE name = ?
+                SELECT DISTINCT document_id FROM entities WHERE name = ?
             """, (entity_a,))
 
         rows = cursor.fetchall()
@@ -143,18 +141,14 @@ async def graph_enhanced_search(
         if not document_ids:
             return {
                 "query": q,
-                "entity_filter": {"entity_a": entity_a, "entity_b": entity_b},
-                "strategy": "graph_enhanced_vector_search",
-                "message": f"No documents found for entity filter — falling back to pure vector search",
-                "graph_filtered_documents": 0,
+                "strategy": "graph_hybrid_llm",
+                "message": f"No documents found for entities",
                 "results": []
             }
 
-        # Step 2 — Vector search filtered to those document IDs only
-        query_vector = get_query_embedding(q)
-
-        # Build Qdrant filter for specific document IDs
-        from qdrant_client.models import Filter, FieldCondition, MatchAny
+        # Layer 2 — Hybrid search within graph-filtered documents
+        dense_vector = get_query_embedding(q)
+        sparse_indices, sparse_values = get_sparse_embedding(q)
 
         doc_filter = Filter(
             must=[
@@ -165,36 +159,98 @@ async def graph_enhanced_search(
             ]
         )
 
-        results = qdrant.search(
+        results = qdrant.query_points(
             collection_name=settings.collection_name,
-            query_vector=query_vector,
-            limit=top_k,
-            query_filter=doc_filter,
+            prefetch=[
+                Prefetch(
+                    query=dense_vector,
+                    using="dense",
+                    limit=top_k * 2,
+                    filter=doc_filter
+                ),
+                Prefetch(
+                    query=SparseVector(
+                        indices=sparse_indices,
+                        values=sparse_values
+                    ),
+                    using="sparse",
+                    limit=top_k * 2,
+                    filter=doc_filter
+                )
+            ],
+            query=FusionQuery(fusion=Fusion.RRF),
+            limit=top_k * 2,
             with_payload=True
         )
 
-        # Format results
-        search_results = []
-        for hit in results:
-            payload = hit.payload
-            search_results.append({
-                "chunk_id": payload.get("chunk_id", ""),
-                "document_id": payload.get("document_id", ""),
-                "title": payload.get("title", ""),
-                "text": payload.get("text", ""),
-                "score": hit.score,
-                "author": payload.get("author", ""),
-                "source": payload.get("source", ""),
-                "tags": payload.get("tags", [])
+        if not results.points:
+            return {
+                "query": q,
+                "strategy": "graph_hybrid_llm",
+                "message": "No results found",
+                "results": []
+            }
+
+        # Layer 3 — LLM reranking
+        chunks_for_reranking = []
+        for i, hit in enumerate(results.points):
+            chunks_for_reranking.append({
+                "index": i,
+                "chunk_id": hit.payload.get("chunk_id", ""),
+                "document_id": hit.payload.get("document_id", ""),
+                "title": hit.payload.get("title", ""),
+                "text": hit.payload.get("text", "")[:500],
+                "score": hit.score
             })
+
+        rerank_prompt = f"""You are a search relevance expert.
+Given this question: "{q}"
+
+Re-rank these chunks from most to least relevant.
+Return ONLY a JSON array of indices in order of relevance, most relevant first.
+Example: [2, 0, 3, 1, 4]
+
+Chunks:
+{json.dumps([{"index": c["index"], "title": c["title"], "text": c["text"]} for c in chunks_for_reranking], indent=2)}
+
+Return only the JSON array, nothing else:"""
+
+        response = gemini_client.models.generate_content(
+            model=settings.llm_model,
+            contents=rerank_prompt
+        )
+
+        try:
+            raw = response.text.strip().replace("```json", "").replace("```", "").strip()
+            ranked_indices = json.loads(raw)
+        except:
+            ranked_indices = list(range(len(chunks_for_reranking)))
+
+        # Build final reranked results
+        reranked_results = []
+        for rank, idx in enumerate(ranked_indices[:top_k]):
+            if idx < len(chunks_for_reranking):
+                chunk = chunks_for_reranking[idx]
+                hit = results.points[idx]
+                reranked_results.append({
+                    "rank": rank + 1,
+                    "chunk_id": chunk["chunk_id"],
+                    "document_id": chunk["document_id"],
+                    "title": chunk["title"],
+                    "text": hit.payload.get("text", ""),
+                    "hybrid_score": chunk["score"],
+                    "author": hit.payload.get("author", ""),
+                    "source": hit.payload.get("source", ""),
+                    "tags": hit.payload.get("tags", [])
+                })
 
         return {
             "query": q,
             "entity_filter": {"entity_a": entity_a, "entity_b": entity_b},
-            "strategy": "graph_enhanced_vector_search",
-            "message": f"Graph found {len(document_ids)} relevant document(s), vector search returned {len(search_results)} chunk(s)",
+            "strategy": "graph_hybrid_llm_reranking",
+            "message": f"Graph filtered {len(document_ids)} docs → Hybrid search → LLM reranked to top {len(reranked_results)}",
             "graph_filtered_documents": len(document_ids),
-            "results": search_results
+            "results": reranked_results
         }
 
     except Exception as e:
