@@ -261,6 +261,7 @@ Gemini free tier has daily limits. When Gemini returns 503 or 429 the system aut
 ### Left Out and Why
 
 **Neo4j/Memgraph** — SQLite relations table achieves the same retrieval improvement with zero extra infrastructure. Pragmatic choice. 
+
 **Contradiction detection**
 When two documents disagree the chat endpoint currently lets Gemini handle it naturally. A proper implementation would explicitly detect semantic similarity with conflicting facts and surface both versions to the user with a warning. This is something I want to build into the next project.
 
