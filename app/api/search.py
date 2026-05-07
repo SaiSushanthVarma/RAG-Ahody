@@ -92,8 +92,30 @@ async def search(
                 tags=payload.get("tags", [])
             ))
 
+        # Generate summary of results
+        summary = None
+        if search_results:
+            try:
+                summary_prompt = f"""You are a search assistant.
+The user searched for: "{q}"
+
+Here are the top results found:
+{chr(10).join([f"- [{r.title}] {r.text[:200]}..." for r in search_results])}
+
+Write a 2-3 sentence summary of what was found. Be concise and factual.
+Mention which documents are most relevant."""
+
+                response = gemini_client.models.generate_content(
+                    model=settings.llm_model,
+                    contents=summary_prompt
+                )
+                summary = response.text
+            except Exception:
+                pass
+
         return SearchResponse(
             query=q,
+            summary=summary,
             results=search_results,
             total=len(search_results)
         )

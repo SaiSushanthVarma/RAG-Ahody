@@ -36,9 +36,9 @@ class SearchResult(BaseModel):
 
 class SearchResponse(BaseModel):
     query: str
+    summary: Optional[str] = None
     results: List[SearchResult]
     total: int
-
 
 # --- Chat schemas ---
 
