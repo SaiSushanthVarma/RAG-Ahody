@@ -98,6 +98,7 @@ In Swagger UI click the Authorize button at the top right and enter your key.
 |---|---|---|
 | POST | /text | Upload plain text with metadata |
 | POST | /document | Upload PDF, text extracted server-side |
+| POST | /chat/stream | Streaming chat via Server-Sent Events |
 | GET | /search | Hybrid search with metadata filtering + LLM summary |
 | GET | /search/graph-enhanced | Graph + hybrid + LLM reranking |
 | POST | /chat | RAG chat with source references |
@@ -235,6 +236,7 @@ Gemini free tier has daily limits. When Gemini returns 503 or 429 the system aut
 ### Built
 - POST /text — upload plain text with metadata 
 - POST /document — upload PDF with server-side text extraction 
+- Streaming chat responses via SSE — POST /chat/stream 
 - Chunking + embeddings + persistent storage 
 - GET /search — hybrid search with score and document reference 
 - Metadata filtering by author, source, tags 
@@ -247,9 +249,16 @@ Gemini free tier has daily limits. When Gemini returns 503 or 429 the system aut
 - API key authentication 
 
 ### Left Out and Why
-- **Streaming responses** — adds protocol complexity without improving the core RAG evaluation criteria. Not evaluated per the assignment brief.
-- **Neo4j/Memgraph** — SQLite relations table achieves the same retrieval improvement with zero extra infrastructure. Pragmatic choice. 
 
+**Neo4j/Memgraph** — SQLite relations table achieves the same retrieval improvement with zero extra infrastructure. Pragmatic choice. 
+**Contradiction detection**
+When two documents disagree the chat endpoint currently lets Gemini handle it naturally. A proper implementation would explicitly detect semantic similarity with conflicting facts and surface both versions to the user with a warning. This is something I want to build into the next project.
+
+**Hybrid search on graph-enhanced endpoint**
+The /search/graph-enhanced endpoint uses hybrid search for retrieval but the /chat endpoint still uses dense-only vector search. With more time I would unify both to use the full hybrid pipeline consistently.
+
+**Document deletion and updates**
+No endpoint to delete or update documents. Once uploaded a document stays forever. A production system needs versioning and the ability to remove outdated content from both Qdrant and SQLite.
 ---
 
 ## How I Used AI Tools
