@@ -3,6 +3,7 @@ from fastapi.responses import StreamingResponse
 from google import genai
 from groq import Groq
 from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, FieldCondition, MatchValue
 import json
 
 from app.core.config import get_settings
@@ -21,6 +22,58 @@ def get_qdrant():
         url=settings.qdrant_url,
         api_key=settings.qdrant_api_key
     )
+
+
+def get_relevant_chunks(question: str, top_k: int):
+    """Retrieve relevant chunks using dense vector search."""
+    qdrant = get_qdrant()
+    query_vector = get_query_embedding(question)
+
+    results = qdrant.query_points(
+        collection_name=settings.collection_name,
+        query=query_vector,
+        using="dense",
+        limit=top_k,
+        with_payload=True
+    ).points
+
+    return results
+
+
+def build_prompt(question: str, results: list) -> tuple[str, list]:
+    """Build prompt and sources from results."""
+    context_parts = []
+    sources = []
+
+    for i, hit in enumerate(results):
+        payload = hit.payload
+        context_parts.append(
+            f"[Source {i+1}] Title: {payload.get('title', 'Unknown')}\n"
+            f"{payload.get('text', '')}"
+        )
+        sources.append(SourceReference(
+            document_id=payload.get("document_id", ""),
+            chunk_id=payload.get("chunk_id", ""),
+            title=payload.get("title", ""),
+            text=payload.get("text", ""),
+            score=hit.score
+        ))
+
+    context = "\n\n---\n\n".join(context_parts)
+
+    prompt = f"""You are a helpful assistant for a knowledge base.
+Answer the question based ONLY on the provided sources below.
+Always reference which source(s) you used by saying [Source 1], [Source 2] etc.
+If the answer is not in the sources, say "I could not find this information in the knowledge base."
+
+Sources:
+{context}
+
+Question: {question}
+
+Answer:"""
+
+    return prompt, sources
 
 
 def generate_answer(prompt: str) -> str:
@@ -42,39 +95,50 @@ def generate_answer(prompt: str) -> str:
         raise e
 
 
-async def stream_gemini(prompt: str, sources: list):
-    """Stream response from Gemini, fall back to Groq if needed."""
+async def stream_answer(prompt: str, sources: list):
+    """Stream response using SSE."""
     try:
-        # First send sources as JSON
-        yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+        # Send sources first
+        sources_data = [
+            {
+                "document_id": s.document_id,
+                "chunk_id": s.chunk_id,
+                "title": s.title,
+                "score": s.score
+            }
+            for s in sources
+        ]
+        yield f"data: {json.dumps({'type': 'sources', 'sources': sources_data})}\n\n"
 
-        # Stream the answer
-        response = gemini_client.models.generate_content_stream(
-            model=settings.llm_model,
-            contents=prompt
-        )
+        # Stream Gemini response
+        try:
+            response = gemini_client.models.generate_content_stream(
+                model=settings.llm_model,
+                contents=prompt
+            )
+            for chunk in response:
+                if chunk.text:
+                    yield f"data: {json.dumps({'type': 'token', 'text': chunk.text})}\n\n"
 
-        for chunk in response:
-            if chunk.text:
-                yield f"data: {json.dumps({'type': 'token', 'text': chunk.text})}\n\n"
+        except Exception as e:
+            if groq_client and ("503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e)):
+                print(f"Gemini unavailable, falling back to Groq: {e}")
+                response = groq_client.chat.completions.create(
+                    model=settings.groq_model,
+                    messages=[{"role": "user", "content": prompt}],
+                    stream=True
+                )
+                for chunk in response:
+                    text = chunk.choices[0].delta.content or ""
+                    if text:
+                        yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
+            else:
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     except Exception as e:
-        if groq_client and ("503" in str(e) or "UNAVAILABLE" in str(e) or "429" in str(e)):
-            print(f"Gemini unavailable, falling back to Groq streaming: {e}")
-            response = groq_client.chat.completions.create(
-                model=settings.groq_model,
-                messages=[{"role": "user", "content": prompt}],
-                stream=True
-            )
-            for chunk in response:
-                text = chunk.choices[0].delta.content or ""
-                if text:
-                    yield f"data: {json.dumps({'type': 'token', 'text': text})}\n\n"
-            yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -84,18 +148,8 @@ async def chat(request: ChatRequest):
     Retrieves relevant chunks and generates answer with source references.
     Falls back to Groq if Gemini is unavailable.
     """
-    qdrant = get_qdrant()
-
     try:
-        query_vector = get_query_embedding(request.question)
-
-        results = qdrant.search(
-            collection_name=settings.collection_name,
-            query_vector=query_vector,
-            vector_name="dense",
-            limit=request.top_k,
-            with_payload=True
-        )
+        results = get_relevant_chunks(request.question, request.top_k)
 
         if not results:
             return ChatResponse(
@@ -104,37 +158,7 @@ async def chat(request: ChatRequest):
                 sources=[]
             )
 
-        context_parts = []
-        sources = []
-
-        for i, hit in enumerate(results):
-            payload = hit.payload
-            context_parts.append(
-                f"[Source {i+1}] Title: {payload.get('title', 'Unknown')}\n"
-                f"{payload.get('text', '')}"
-            )
-            sources.append(SourceReference(
-                document_id=payload.get("document_id", ""),
-                chunk_id=payload.get("chunk_id", ""),
-                title=payload.get("title", ""),
-                text=payload.get("text", ""),
-                score=hit.score
-            ))
-
-        context = "\n\n---\n\n".join(context_parts)
-
-        prompt = f"""You are a helpful assistant for a knowledge base.
-Answer the question based ONLY on the provided sources below.
-Always reference which source(s) you used by saying [Source 1], [Source 2] etc.
-If the answer is not in the sources, say "I could not find this information in the knowledge base."
-
-Sources:
-{context}
-
-Question: {request.question}
-
-Answer:"""
-
+        prompt, sources = build_prompt(request.question, results)
         answer = generate_answer(prompt)
 
         return ChatResponse(
@@ -150,26 +174,16 @@ Answer:"""
 @router.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
     """
-    Streaming chat endpoint using Server-Sent Events (SSE).
+    Streaming chat endpoint using Server-Sent Events.
     Returns tokens as they are generated.
-    
+
     Response format:
     data: {"type": "sources", "sources": [...]}
     data: {"type": "token", "text": "..."}
     data: {"type": "done"}
     """
-    qdrant = get_qdrant()
-
     try:
-        query_vector = get_query_embedding(request.question)
-
-        results = qdrant.search(
-            collection_name=settings.collection_name,
-            query_vector=query_vector,
-            vector_name="dense",
-            limit=request.top_k,
-            with_payload=True
-        )
+        results = get_relevant_chunks(request.question, request.top_k)
 
         if not results:
             async def empty_stream():
@@ -178,38 +192,10 @@ async def chat_stream(request: ChatRequest):
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
             return StreamingResponse(empty_stream(), media_type="text/event-stream")
 
-        context_parts = []
-        sources = []
-
-        for i, hit in enumerate(results):
-            payload = hit.payload
-            context_parts.append(
-                f"[Source {i+1}] Title: {payload.get('title', 'Unknown')}\n"
-                f"{payload.get('text', '')}"
-            )
-            sources.append({
-                "document_id": payload.get("document_id", ""),
-                "chunk_id": payload.get("chunk_id", ""),
-                "title": payload.get("title", ""),
-                "score": hit.score
-            })
-
-        context = "\n\n---\n\n".join(context_parts)
-
-        prompt = f"""You are a helpful assistant for a knowledge base.
-Answer the question based ONLY on the provided sources below.
-Always reference which source(s) you used by saying [Source 1], [Source 2] etc.
-If the answer is not in the sources, say "I could not find this information in the knowledge base."
-
-Sources:
-{context}
-
-Question: {request.question}
-
-Answer:"""
+        prompt, sources = build_prompt(request.question, results)
 
         return StreamingResponse(
-            stream_gemini(prompt, sources),
+            stream_answer(prompt, sources),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
