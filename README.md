@@ -270,6 +270,7 @@ The /search/graph-enhanced endpoint uses hybrid search for retrieval but the /ch
 
 **Document deletion and updates**
 No endpoint to delete or update documents. Once uploaded a document stays forever. A production system needs versioning and the ability to remove outdated content from both Qdrant and SQLite.
+
 ---
 
 ## How I Used AI Tools
