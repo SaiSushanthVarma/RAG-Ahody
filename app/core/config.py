@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     groq_model: str = "qwen3-32b"
     
     # Chunking settings
-    chunk_size: int = 500
-    chunk_overlap: int = 50
+    chunk_size: int = 512
+    chunk_overlap: int = 48
 
     class Config:
         env_file = ".env"

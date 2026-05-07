@@ -1,0 +1,191 @@
+{
+  "info": {
+    "name": "Ahody Knowledge Base API",
+    "description": "RAG-powered knowledge base with hybrid search, entity graph and LLM chat",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {"key": "key", "value": "X-API-Key"},
+      {"key": "value", "value": "ahody-secret-key-2026"},
+      {"key": "in", "value": "header"}
+    ]
+  },
+  "item": [
+    {
+      "name": "Health Check",
+      "request": {
+        "method": "GET",
+        "url": {"raw": "http://127.0.0.1:8000/health", "host": ["127.0.0.1"], "port": "8000", "path": ["health"]}
+      }
+    },
+    {
+      "name": "Upload Text - Memo 1",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": {"raw": "http://127.0.0.1:8000/text", "host": ["127.0.0.1"], "port": "8000", "path": ["text"]},
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"INTERNAL MEMO\\nTo: All Staff\\nFrom: Sarah Mitchell, CEO\\nDate: March 15, 2024\\nSubject: Q1 Strategy Update - NordMedia Group\\n\\nNordMedia Group had a strong start to 2024. Under the leadership of Sarah Mitchell, the company has expanded its digital division by 40% since January.\",\n  \"title\": \"Q1 Strategy Update\",\n  \"author\": \"Sarah Mitchell\",\n  \"source\": \"Internal Memo\",\n  \"tags\": [\"strategy\", \"Q1\", \"2024\"]\n}"
+        }
+      }
+    },
+    {
+      "name": "Upload Text - Memo 2",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": {"raw": "http://127.0.0.1:8000/text", "host": ["127.0.0.1"], "port": "8000", "path": ["text"]},
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"INTERNAL MEMO\\nTo: Digital Team\\nFrom: Erik Lindqvist\\nDate: April 2, 2024\\nSubject: AI Platform Launch Update\\n\\nThe AI content platform developed with DataBridge Solutions is on track for April launch.\",\n  \"title\": \"AI Platform Launch Update\",\n  \"author\": \"Erik Lindqvist\",\n  \"source\": \"Internal Memo\",\n  \"tags\": [\"AI\", \"platform\", \"2024\"]\n}"
+        }
+      }
+    },
+    {
+      "name": "Upload Text - Memo 3",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": {"raw": "http://127.0.0.1:8000/text", "host": ["127.0.0.1"], "port": "8000", "path": ["text"]},
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"INTERNAL MEMO\\nTo: Executive Team\\nFrom: Marcus Johansson, CFO\\nDate: April 20, 2024\\nSubject: Q2 Financial Review\\n\\nNordMedia Group Q2 financial performance has exceeded expectations. Revenue is up 28% compared to Q2 2023.\",\n  \"title\": \"Q2 Financial Review\",\n  \"author\": \"Marcus Johansson\",\n  \"source\": \"Internal Memo\",\n  \"tags\": [\"finance\", \"Q2\", \"2024\", \"expansion\"]\n}"
+        }
+      }
+    },
+    {
+      "name": "Upload PDF Document",
+      "request": {
+        "method": "POST",
+        "url": {"raw": "http://127.0.0.1:8000/document", "host": ["127.0.0.1"], "port": "8000", "path": ["document"]},
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {"key": "file", "type": "file", "src": "sample_data/board_report_q2_2024.pdf"},
+            {"key": "title", "value": "Board Report Q2 2024", "type": "text"},
+            {"key": "author", "value": "Sarah Mitchell", "type": "text"},
+            {"key": "source", "value": "Board Report", "type": "text"},
+            {"key": "tags", "value": "board,Q2,2024,finance", "type": "text"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Hybrid Search",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://127.0.0.1:8000/search?q=AI platform revenue&top_k=5",
+          "host": ["127.0.0.1"], "port": "8000", "path": ["search"],
+          "query": [
+            {"key": "q", "value": "AI platform revenue"},
+            {"key": "top_k", "value": "5"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Search with Author Filter",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://127.0.0.1:8000/search?q=AI platform&author=Sarah Mitchell",
+          "host": ["127.0.0.1"], "port": "8000", "path": ["search"],
+          "query": [
+            {"key": "q", "value": "AI platform"},
+            {"key": "author", "value": "Sarah Mitchell"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Search with Tag Filter",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://127.0.0.1:8000/search?q=financial targets&tags=finance",
+          "host": ["127.0.0.1"], "port": "8000", "path": ["search"],
+          "query": [
+            {"key": "q", "value": "financial targets"},
+            {"key": "tags", "value": "finance"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Chat - Source References",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": {"raw": "http://127.0.0.1:8000/chat", "host": ["127.0.0.1"], "port": "8000", "path": ["chat"]},
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"Who approved the Norway expansion and what was the investment amount?\",\n  \"top_k\": 5\n}"
+        }
+      }
+    },
+    {
+      "name": "Chat - Cross Document Question",
+      "request": {
+        "method": "POST",
+        "header": [{"key": "Content-Type", "value": "application/json"}],
+        "url": {"raw": "http://127.0.0.1:8000/chat", "host": ["127.0.0.1"], "port": "8000", "path": ["chat"]},
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"question\": \"What role did DataBridge Solutions play and what was the revenue growth?\",\n  \"top_k\": 5\n}"
+        }
+      }
+    },
+    {
+      "name": "Get Full Entity Graph",
+      "request": {
+        "method": "GET",
+        "url": {"raw": "http://127.0.0.1:8000/graph", "host": ["127.0.0.1"], "port": "8000", "path": ["graph"]}
+      }
+    },
+    {
+      "name": "Graph Search - Two Entities",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://127.0.0.1:8000/graph/search?entity_a=Sarah Mitchell&entity_b=DataBridge Solutions",
+          "host": ["127.0.0.1"], "port": "8000", "path": ["graph", "search"],
+          "query": [
+            {"key": "entity_a", "value": "Sarah Mitchell"},
+            {"key": "entity_b", "value": "DataBridge Solutions"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "Graph Search - One Entity",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://127.0.0.1:8000/graph/search?entity_a=Marcus Johansson",
+          "host": ["127.0.0.1"], "port": "8000", "path": ["graph", "search"],
+          "query": [{"key": "entity_a", "value": "Marcus Johansson"}]
+        }
+      }
+    },
+    {
+      "name": "Graph Enhanced Search - 3 Layer Pipeline",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "http://127.0.0.1:8000/search/graph-enhanced?q=AI strategy&entity_a=Sarah Mitchell&entity_b=DataBridge Solutions&top_k=5",
+          "host": ["127.0.0.1"], "port": "8000", "path": ["search", "graph-enhanced"],
+          "query": [
+            {"key": "q", "value": "AI strategy"},
+            {"key": "entity_a", "value": "Sarah Mitchell"},
+            {"key": "entity_b", "value": "DataBridge Solutions"},
+            {"key": "top_k", "value": "5"}
+          ]
+        }
+      }
+    }
+  ]
+}
