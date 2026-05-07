@@ -35,6 +35,16 @@ This project takes those foundations and extends them with hybrid search, entity
 - Google AI Studio account — free at aistudio.google.com
 - Groq account — free at console.groq.com
 
+
+## Important Notes Before Testing
+
+### API Rate Limits
+This project runs on free tier APIs. If you get a 503 or 429 error on any endpoint, simply wait 30-60 seconds and try again. Gemini free tier has daily limits and occasional high demand periods. The system automatically falls back to Qwen3-32B via Groq when Gemini is unavailable, but if both are busy a retry always works. But its better with Gemini as the embeddigns cannot be processed with Groq(Qwen 3.5).
+
+### API Key
+All endpoints require this header for authentication- APIKEY/X-API-Key: ahody-secret-key-2026
+
+
 ### Setup
 
 ```bash
